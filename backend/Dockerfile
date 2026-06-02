@@ -9,11 +9,13 @@ ENV PYTHONUNBUFFERED=1 \
 # Set working directory inside the container
 WORKDIR /app
 
-# Install system dependencies (git for pip repositories, libsndfile/ffmpeg for audio processing)
+# Install system dependencies (git for pip, libsndfile/ffmpeg for audio, build-essential/python3-dev for compiling C extensions like psutil/IndicTransToolkit)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ffmpeg \
     libsndfile1 \
+    build-essential \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy only the requirements file first to leverage Docker layer caching
