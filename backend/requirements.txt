@@ -1,0 +1,15 @@
+fastapi==0.110.0
+uvicorn==0.28.0
+pydantic==2.6.4
+torch==2.2.1
+torchaudio==2.2.1
+transformers==4.38.2
+psutil==5.9.8
+git+https://github.com/VarunGumma/IndicTransToolkit.git
+python-multipart==0.0.9
+sentencepiece==0.2.0
+protobuf==4.25.3
+onnxruntime==1.26.0
+pydub==0.25.1
+requests==2.31.0
+python-dotenv==1.0.1

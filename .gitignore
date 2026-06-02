@@ -1,0 +1,52 @@
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Virtual environments & python caches
+venv/
+.venv/
+backend/venv/
+backend/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Angular frontend files & dependencies
+node_modules/
+frontend/node_modules/
+.angular/
+frontend/.angular/
+npm-cache/
+/dist/
+frontend/dist/
+.npm/
+
+# IDEs & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.project
+.pydevproject
+.settings/
+
+# Environment files
+.env
+.env.local
+.env.*.local
