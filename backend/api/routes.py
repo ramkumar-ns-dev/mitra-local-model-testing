@@ -1,6 +1,8 @@
 import base64
 import requests
 import time
+import psutil
+from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, status
 from pydantic import BaseModel, Field
 from backend.services.audio_processor import AudioProcessor
@@ -10,20 +12,29 @@ from backend.utils.logging_config import get_logger
 logger = get_logger()
 router = APIRouter()
 
-# Translation Request Schema
+# Language Mapping (ISO 639-1 / Bhashini code -> NLLB-200 code)
+LANG_MAP = {
+    "as": "asm_Beng", "bn": "ben_Beng", "brx": "bod_Tibt", "doi": "doi_Deva",
+    "en": "eng_Latn", "gu": "guj_Gujr", "hi": "hin_Deva", "kn": "kan_Knda",
+    "ks": "kas_Arab", "kok": "kok_Deva", "mai": "mai_Deva", "ml": "mal_Mlym",
+    "mni": "mni_Beng", "mr": "mar_Deva", "ne": "nep_Deva", "or": "ory_Orya",
+    "pa": "pan_Guru", "sa": "san_Deva", "sat": "sat_Olch", "sd": "snd_Deva",
+    "ta": "tam_Taml", "te": "tel_Telu", "ur": "urd_Aran"
+}
+
+# Translation Request Schema (Supports both NLLB tags and Angular 2-letter codes)
 class TranslateRequest(BaseModel):
     text: str = Field(..., description="The text to translate")
-    source_lang: str = Field(..., description="The source language tag, e.g. eng_Latn")
-    target_lang: str = Field(..., description="The target language tag, e.g. hin_Deva")
+    source_lang: Optional[str] = Field(None, description="Source language tag, e.g., eng_Latn")
+    target_lang: Optional[str] = Field(None, description="Target language tag, e.g., hin_Deva")
+    src_lang: Optional[str] = Field(None, description="Legacy source language tag, e.g., en")
+    tgt_lang: Optional[str] = Field(None, description="Legacy target language tag, e.g., hi")
 
 @router.post("/transcribe")
 async def transcribe(request: Request):
     """
     Speech-to-Text Endpoint.
-    Accepts audio data via:
-    1. Multipart form-data file upload (field name: 'audio')
-    2. JSON payload with 'audio_url'
-    3. JSON payload with 'audio_base64' (optional filename inside payload)
+    Supports both standard field names ('audio') and Angular frontend field names ('file').
     """
     start_time = time.time()
     content_type = request.headers.get("content-type", "")
@@ -37,11 +48,13 @@ async def transcribe(request: Request):
         if "multipart/form-data" in content_type:
             logger.info("Parsing multipart form-data upload for transcription")
             form = await request.form()
-            upload_file = form.get("audio")
+            # Support both 'audio' (standard curl) and 'file' (Angular frontend)
+            upload_file = form.get("audio") or form.get("file")
+            
             if not upload_file:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST, 
-                    detail="Missing 'audio' field in multipart form-data upload"
+                    detail="Missing audio file field ('audio' or 'file') in form data"
                 )
             filename = upload_file.filename
             file_bytes = await upload_file.read()
@@ -69,13 +82,10 @@ async def transcribe(request: Request):
             if audio_url:
                 logger.info(f"Downloading audio from URL: {audio_url}")
                 try:
-                    # Download audio file with a 15-second timeout
                     response = requests.get(audio_url, timeout=15.0)
                     response.raise_for_status()
                     file_bytes = response.content
                     file_size = len(file_bytes)
-                    
-                    # Deduce filename from URL or default
                     url_path = audio_url.split("?")[0]
                     filename = url_path.split("/")[-1] or "audio.wav"
                 except requests.exceptions.RequestException as e:
@@ -87,7 +97,6 @@ async def transcribe(request: Request):
             else:
                 logger.info("Decoding base64 audio string")
                 try:
-                    # Strip standard base64 data URL headers if present
                     if "," in audio_base64:
                         audio_base64 = audio_base64.split(",")[1]
                     file_bytes = base64.b64decode(audio_base64)
@@ -97,7 +106,7 @@ async def transcribe(request: Request):
                     logger.error(f"Failed to decode base64 audio: {e}")
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Failed to decode base64 audio. Ensure the base64 string is well-formed."
+                        detail="Failed to decode base64 audio."
                     )
         else:
             raise HTTPException(
@@ -124,10 +133,13 @@ async def transcribe(request: Request):
         
         response_payload = {
             "success": True,
-            "text": inference_result["text"]
+            "text": inference_result["text"],
+            "metrics": {
+                "latency_ms": total_time_ms,
+                "engine": inference_result["engine"]
+            }
         }
         
-        # Include confidence score if provided by model
         if inference_result.get("confidence") is not None:
             response_payload["confidence"] = inference_result["confidence"]
             
@@ -146,23 +158,42 @@ async def transcribe(request: Request):
 async def translate(body: TranslateRequest):
     """
     Translation Endpoint.
-    Translates text from source_lang to target_lang using NLLB-200.
+    Supports both NLLB-200 tags (source_lang) and legacy ISO-639 codes (src_lang).
     """
     start_time = time.time()
-    logger.info(f"Translation request: src={body.source_lang}, tgt={body.target_lang}, text_len={len(body.text)}")
+    
+    # Extract languages dynamically
+    src = body.source_lang or body.src_lang
+    tgt = body.target_lang or body.tgt_lang
+    
+    if not src or not tgt:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing source/target language parameters."
+        )
+        
+    # Map legacy 2-letter codes to NLLB codes if present in map
+    src_mapped = LANG_MAP.get(src, src)
+    tgt_mapped = LANG_MAP.get(tgt, tgt)
+    
+    logger.info(f"Translation request: src={src} ({src_mapped}), tgt={tgt} ({tgt_mapped}), text_len={len(body.text)}")
     
     try:
         translated_text = model_loader.translate(
             text=body.text,
-            source_lang=body.source_lang,
-            target_lang=body.target_lang
+            source_lang=src_mapped,
+            target_lang=tgt_mapped
         )
         
         processing_time_ms = int((time.time() - start_time) * 1000)
         logger.info(f"Translation completed in {processing_time_ms}ms")
         
         return {
-            "translation": translated_text
+            "translation": translated_text,
+            "metrics": {
+                "latency_ms": processing_time_ms,
+                "engine": f"Local IndicTrans2 ({model_loader.translation_model_name})" if model_loader.translation_status == "ready" else "Simulated Engine"
+            }
         }
     except Exception as e:
         logger.exception(f"Translation failure: {e}")
@@ -175,14 +206,10 @@ async def translate(body: TranslateRequest):
 async def health():
     """
     Health Check Endpoint.
-    Returns status indicators for ASR and translation services.
     """
     status_info = model_loader.get_status()
-    
-    # Ready if loaded successfully or in mock mode
     asr_ready = status_info["asr_status"] in ("ready", "ready_mock")
     translation_ready = status_info["translation_status"] in ("ready", "ready_mock")
-    
     is_healthy = asr_ready and translation_ready
     
     return {
@@ -190,3 +217,45 @@ async def health():
         "model_loaded": is_healthy,
         "details": status_info
     }
+
+# Legacy Endpoints for Angular Frontend Compatibility
+
+@router.get("/status")
+def get_legacy_status():
+    """
+    Legacy GET /status endpoint polled by the Angular frontend.
+    """
+    status_info = model_loader.get_status()
+    
+    # Gather system stats
+    cpu_percent = psutil.cpu_percent()
+    memory_info = psutil.virtual_memory()
+    
+    return {
+        "status": "online",
+        "device": status_info["device"],
+        "torch_available": True,
+        "models": {
+            "indic_conformer_asr": status_info["asr_status"],
+            "indictrans2_en_indic": status_info["translation_status"],
+            "indictrans2_indic_en": status_info["translation_status"]
+        },
+        "loading": (status_info["asr_status"] == "loading") or (status_info["translation_status"] == "loading"),
+        "error": "",
+        "system": {
+            "cpu_usage_percent": cpu_percent,
+            "memory_usage_percent": memory_info.percent,
+            "memory_available_gb": round(memory_info.available / (1024**3), 2),
+            "memory_total_gb": round(memory_info.total / (1024**3), 2)
+        }
+    }
+
+class LoadRequest(BaseModel):
+    hf_token: Optional[str] = None
+
+@router.post("/load")
+def trigger_legacy_load(request: LoadRequest):
+    """
+    Legacy POST /load endpoint called by the Angular frontend.
+    """
+    return {"status": "already_loading" if model_loader.asr_status == "loading" else "ready"}
