@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mitra-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - MOCK_MODELS=False
+    volumes:
+      # Persist downloaded model weights so they aren't redownloaded on container restart
+      - model_cache:/app/model_cache
+    restart: unless-stopped
+
+volumes:
+  model_cache:
