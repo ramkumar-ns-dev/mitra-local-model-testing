@@ -1,6 +1,16 @@
+import os
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
 import time
+import sys
 import torch
 import numpy as np
+import threading
+
+# Monkey-patch torch.compile to prevent Dynamo Python 3.12+ compatibility errors in IndicF5
+if sys.version_info >= (3, 12):
+    torch.compile = lambda model, *args, **kwargs: model
+
 from transformers import pipeline, AutoModelForSeq2SeqLM, AutoTokenizer
 from backend.config import settings
 from backend.utils.logging_config import get_logger
@@ -28,8 +38,12 @@ class ModelLoader:
         self.indic_processor = None
         self.asr_status = "not_loaded"
         self.translation_status = "not_loaded"
+        self.tts_status = "not_loaded"
         self.asr_model_name = settings.ASR_MODEL_ID
         self.translation_model_name = settings.TRANSLATION_MODEL_ID
+        self.tts_model_name = settings.TTS_MODEL_ID
+        self.tts_model = None
+        self.tts_lock = threading.Lock()
         self._initialized = True
 
     def _get_device(self) -> torch.device:
@@ -62,18 +76,28 @@ class ModelLoader:
             self.asr_status = "loading"
             logger.info(f"Loading ASR model: {self.asr_model_name}")
             
-            # Since ai4bharat/conformer-hi-gpu--t4 is a Bhashini Service ID, it will fail to load from Hugging Face hub.
-            # We explicitly raise an exception if it matches to trigger the fallback directly.
-            if "gpu--t4" in self.asr_model_name:
-                raise ValueError(f"{self.asr_model_name} is a Bhashini API service ID and cannot be loaded as a local HF repository.")
-                
-            self.asr_pipeline = pipeline(
-                "automatic-speech-recognition",
-                model=self.asr_model_name,
-                device=self.device
-            )
-            self.asr_status = "ready"
-            logger.info("ASR model loaded successfully.")
+            if "indic-conformer" in self.asr_model_name.lower():
+                from transformers import AutoModel
+                self.asr_model = AutoModel.from_pretrained(
+                    self.asr_model_name,
+                    trust_remote_code=True,
+                    token=settings.HF_TOKEN
+                ).to(self.device)
+                self.asr_status = "ready"
+                logger.info("IndicConformer ASR model loaded successfully.")
+            else:
+                # Since ai4bharat/conformer-hi-gpu--t4 is a Bhashini Service ID, it will fail to load from Hugging Face hub.
+                # We explicitly raise an exception if it matches to trigger the fallback directly.
+                if "gpu--t4" in self.asr_model_name:
+                    raise ValueError(f"{self.asr_model_name} is a Bhashini API service ID and cannot be loaded as a local HF repository.")
+                    
+                self.asr_pipeline = pipeline(
+                    "automatic-speech-recognition",
+                    model=self.asr_model_name,
+                    device=self.device
+                )
+                self.asr_status = "ready"
+                logger.info("ASR model loaded successfully.")
 
         except Exception as e:
             logger.warning(f"Failed to load primary ASR model '{self.asr_model_name}': {e}. Attempting fallback to '{settings.FALLBACK_ASR_MODEL_ID}'...")
@@ -135,8 +159,54 @@ class ModelLoader:
             logger.error(f"Failed to load translation model '{self.translation_model_name}': {e}. Falling back to MOCK mode for translation.")
             self.translation_status = "ready_mock"
 
-        # 3. Warm-up models
-        self.warmup_models()
+        # 3. Load Text-to-Speech (TTS) Model
+        if settings.MOCK_MODELS:
+            self.tts_status = "ready_mock"
+        else:
+            try:
+                self.tts_status = "loading"
+                logger.info(f"Loading TTS model: {self.tts_model_name}")
+                from transformers import AutoModel
+                from safetensors.torch import load_file
+                from huggingface_hub import hf_hub_download
+
+                # Force CPU for TTS model if device is MPS due to lack of ComplexFloat support on MPS backend in PyTorch
+                self.tts_device = torch.device("cpu") if self.device.type == "mps" else self.device
+                logger.info(f"Loading TTS model structure on device: {self.tts_device}")
+                self.tts_model = AutoModel.from_pretrained(
+                    self.tts_model_name,
+                    trust_remote_code=True,
+                    token=settings.HF_TOKEN
+                ).to(self.tts_device)
+                
+                logger.info("Loading safetensors checkpoint and cleaning state dict keys...")
+                safetensors_path = hf_hub_download(self.tts_model_name, filename="model.safetensors", token=settings.HF_TOKEN)
+                state_dict = load_file(safetensors_path, device="cpu")
+                cleaned_state_dict = {}
+                for k, v in state_dict.items():
+                    new_key = k.replace("._orig_mod.", ".")
+                    cleaned_state_dict[new_key] = v
+                    
+                self.tts_model.load_state_dict(cleaned_state_dict, strict=False)
+                self.tts_model.config.remove_sil = False
+
+
+                # Monkey-patch default nfe_step from 32 to 16 for faster CPU inference
+                try:
+                    import f5_tts.infer.utils_infer
+                    f5_tts.infer.utils_infer.nfe_step = 16
+                    logger.info("Monkey-patched f5_tts.infer.utils_infer.nfe_step to 16")
+                except Exception as monkey_err:
+                    logger.warning(f"Failed to monkey patch nfe_step: {monkey_err}")
+                
+                self.tts_status = "ready"
+                logger.info(f"IndicF5 TTS model loaded successfully on {self.tts_device}.")
+            except Exception as e:
+                logger.error(f"Failed to load TTS model '{self.tts_model_name}': {e}. Falling back to MOCK mode for TTS.")
+                self.tts_status = "ready_mock"
+
+        # 4. Warm-up models (commented out to prevent blocking server startup)
+        # self.warmup_models()
 
     def warmup_models(self):
         """
@@ -145,15 +215,24 @@ class ModelLoader:
         logger.info("Warming up models...")
         
         # Warm-up ASR
-        if self.asr_status == "ready" and self.asr_pipeline is not None:
-            try:
-                start = time.time()
-                # 1-second of silence at 16kHz
-                dummy_audio = np.zeros(16000, dtype=np.float32)
-                self.asr_pipeline(dummy_audio)
-                logger.info(f"ASR model warmed up in {time.time() - start:.2f} seconds.")
-            except Exception as e:
-                logger.error(f"ASR warm-up failed: {e}")
+        if self.asr_status == "ready":
+            if "indic-conformer" in self.asr_model_name.lower() and hasattr(self, "asr_model"):
+                try:
+                    start = time.time()
+                    dummy_audio = torch.zeros((1, 16000), dtype=torch.float32).to(self.device)
+                    self.asr_model(dummy_audio, lang="hi", decoding="ctc")
+                    logger.info(f"ASR model warmed up in {time.time() - start:.2f} seconds.")
+                except Exception as e:
+                    logger.error(f"ASR warm-up failed: {e}")
+            elif self.asr_pipeline is not None:
+                try:
+                    start = time.time()
+                    # 1-second of silence at 16kHz
+                    dummy_audio = np.zeros(16000, dtype=np.float32)
+                    self.asr_pipeline(dummy_audio)
+                    logger.info(f"ASR model warmed up in {time.time() - start:.2f} seconds.")
+                except Exception as e:
+                    logger.error(f"ASR warm-up failed: {e}")
                 
         # Warm-up Translation
         if self.translation_status == "ready":
@@ -171,6 +250,19 @@ class ModelLoader:
             except Exception as e:
                 logger.error(f"Translation warm-up failed: {e}")
 
+        # Warm-up TTS
+        if self.tts_status == "ready" and hasattr(self, "tts_model") and self.tts_model is not None:
+            try:
+                start = time.time()
+                self.tts_model(
+                    "नमस्ते", 
+                    ref_audio_path=settings.DEFAULT_REF_AUDIO_PATH, 
+                    ref_text=settings.DEFAULT_REF_TEXT
+                )
+                logger.info(f"TTS model warmed up in {time.time() - start:.2f} seconds.")
+            except Exception as e:
+                logger.error(f"TTS warm-up failed: {e}")
+
     def transcribe(self, waveform_tensor: torch.Tensor) -> dict:
         """
         Runs speech-to-text inference.
@@ -179,6 +271,26 @@ class ModelLoader:
             # Simulate transcription
             time.sleep(0.5)  # Simulate network/processing latency
             return {"text": "नमस्ते आप कैसे हैं", "confidence": 0.98, "engine": "Mock ASR"}
+
+        if "indic-conformer" in self.asr_model_name.lower():
+            if not hasattr(self, "asr_model") or self.asr_model is None:
+                raise RuntimeError("IndicConformer model is not initialized or loaded.")
+            try:
+                # Prepare 2D tensor on target device
+                wav_2d = waveform_tensor.unsqueeze(0).to(self.device)
+                
+                # Run inference
+                with torch.no_grad():
+                    text = self.asr_model(wav_2d, lang="hi", decoding="ctc")
+                    
+                return {
+                    "text": text if text else "[Unintelligible speech]",
+                    "confidence": None,
+                    "engine": f"Local ASR ({self.asr_model_name})"
+                }
+            except Exception as e:
+                logger.error(f"Inference error during IndicConformer transcription: {e}")
+                raise RuntimeError(f"IndicConformer inference failed: {str(e)}")
 
         if not self.asr_pipeline:
             raise RuntimeError("ASR model is not initialized or loaded.")
@@ -323,8 +435,88 @@ class ModelLoader:
             "asr_model": self.asr_model_name,
             "translation_status": self.translation_status,
             "translation_model": self.translation_model_name,
+            "tts_status": self.tts_status,
+            "tts_model": self.tts_model_name,
             "device": str(self.device)
         }
+
+    def synthesize(self, text: str, ref_audio_bytes: bytes = None, ref_text: str = None) -> bytes:
+        """
+        Synthesizes speech from target text using IndicF5.
+        If ref_audio_bytes/ref_text is not provided, falls back to the default reference voice.
+        Returns WAV bytes (24kHz).
+        """
+        if self.tts_status == "ready_mock":
+            import io
+            import soundfile as sf
+            logger.info("Mock synthesis requested.")
+            # 1 second of silence at 24000Hz
+            silent_audio = np.zeros(24000, dtype=np.float32)
+            out_buf = io.BytesIO()
+            sf.write(out_buf, silent_audio, 24000, format="WAV")
+            return out_buf.getvalue()
+
+        if not self.tts_model:
+            raise RuntimeError("TTS model is not initialized or loaded.")
+
+        with self.tts_lock:
+            import io
+            import tempfile
+            import soundfile as sf
+            import os
+
+            temp_ref_path = None
+            try:
+                # Determine reference audio and transcript
+                if ref_audio_bytes:
+                    # Save uploaded bytes to a temp file
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_ref:
+                        temp_ref.write(ref_audio_bytes)
+                        temp_ref_path = temp_ref.name
+                    transcript = ref_text or ""
+                    logger.info(f"Using custom voice reference audio: path={temp_ref_path}, transcript_len={len(transcript)}")
+                else:
+                    temp_ref_path = settings.DEFAULT_REF_AUDIO_PATH
+                    transcript = settings.DEFAULT_REF_TEXT
+                    logger.info("Using default fallback voice reference audio")
+
+                # Clean input text and transcript of punctuation to prevent silence generation in IndicF5
+                import re
+                cleaned_text = re.sub(r'[।॥.,?!;:\"\'\-\(\)\[\]\{\}]', ' ', text)
+                cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
+                
+                cleaned_transcript = re.sub(r'[।॥.,?!;:\"\'\-\(\)\[\]\{\}]', ' ', transcript)
+                cleaned_transcript = re.sub(r'\s+', ' ', cleaned_transcript).strip()
+
+                # Run inference
+                logger.info(f"Running IndicF5 synthesis for cleaned text: '{cleaned_text}' (original len: {len(text)})")
+                start_time = time.time()
+                with torch.no_grad():
+                    audio_array = self.tts_model(
+                        cleaned_text,
+                        ref_audio_path=temp_ref_path,
+                        ref_text=cleaned_transcript
+                    )
+                logger.info(f"IndicF5 model forward pass completed in {time.time() - start_time:.2f} seconds")
+
+                # Normalize and convert audio to WAV bytes at 24kHz
+                if audio_array.dtype == np.int16:
+                    audio_array = audio_array.astype(np.float32) / 32768.0
+
+                out_buf = io.BytesIO()
+                sf.write(out_buf, np.array(audio_array, dtype=np.float32), 24000, format="WAV")
+                return out_buf.getvalue()
+
+            except Exception as e:
+                logger.error(f"Inference error during IndicF5 synthesis: {e}")
+                raise RuntimeError(f"IndicF5 synthesis failed: {str(e)}")
+            finally:
+                # Cleanup temp custom audio file if created
+                if ref_audio_bytes and temp_ref_path and os.path.exists(temp_ref_path):
+                    try:
+                        os.remove(temp_ref_path)
+                    except Exception as cleanup_err:
+                        logger.warning(f"Failed to clean up temp reference file: {cleanup_err}")
 
 # Global singleton
 model_loader = ModelLoader()

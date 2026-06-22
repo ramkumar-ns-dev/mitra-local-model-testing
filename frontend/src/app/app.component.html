@@ -165,6 +165,14 @@
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
           </button>
+
+          <!-- Text-to-Speech (TTS) Button for Source -->
+          <button class="icon-btn" (click)="listenSourceText()" [disabled]="!sourceText.trim() || isSynthesizing" title="Listen to Source Text">
+            <svg *ngIf="isSynthesizing && activeTtsSide === 'source'" class="spin" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>
+            <svg *ngIf="!(isSynthesizing && activeTtsSide === 'source')" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+            </svg>
+          </button>
         </div>
 
         <button class="btn-primary" (click)="performTranslation()" [disabled]="isTranslating || !sourceText.trim()">
@@ -197,17 +205,18 @@
       <div class="textarea-container">
         <textarea 
           class="translate-textarea" 
-          placeholder="Translated output will appear here..." 
-          [(ngModel)]="targetText" 
-          readonly>
+          placeholder="Translated output will appear here, or type text directly to use Text-to-Speech..." 
+          [(ngModel)]="targetText">
         </textarea>
+        <span class="char-counter">{{ targetText.length }} chars</span>
       </div>
 
       <div class="card-actions">
         <div class="action-group">
           <!-- Text-to-Speech (TTS) Button -->
-          <button class="icon-btn" (click)="listenTargetText()" [disabled]="!targetText.trim()" title="Listen to Translation">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="icon-btn" (click)="listenTargetText()" [disabled]="!targetText.trim() || isSynthesizing" title="Listen to Translation">
+            <svg *ngIf="isSynthesizing && activeTtsSide === 'target'" class="spin" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>
+            <svg *ngIf="!(isSynthesizing && activeTtsSide === 'target')" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
             </svg>
           </button>

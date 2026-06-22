@@ -23,6 +23,18 @@
       "dom"
     ]
   },
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".angular"
+  ],
+  "watchOptions": {
+    "excludeDirectories": [
+      "**/node_modules",
+      "**/dist",
+      "**/.angular"
+    ]
+  },
   "angularCompilerOptions": {
     "enableI18nLegacyMessageIdFormat": false,
     "strictInjectionParameters": true,
@@ -30,3 +42,4 @@
     "strictTemplates": true
   }
 }
+

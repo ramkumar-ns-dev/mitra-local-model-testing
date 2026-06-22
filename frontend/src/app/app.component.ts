@@ -31,7 +31,7 @@ interface HistoryEntry {
   styleUrl: './app.component.css'
 })
 export class AppComponent implements OnInit, OnDestroy {
-  // App state
+  // App state - test change
   engineMode: 'local' | 'bhashini' | 'demo' = 'demo';
   serverStatus: 'online' | 'offline' | 'loading' = 'offline';
   serverStatusText = 'Disconnected';
@@ -70,8 +70,19 @@ export class AppComponent implements OnInit, OnDestroy {
   modelStates = {
     asr: 'not_loaded',
     en_indic: 'not_loaded',
-    indic_en: 'not_loaded'
+    indic_en: 'not_loaded',
+    tts: 'not_loaded'
   };
+
+  // TTS configuration
+  ttsMode: 'indicf5' | 'native' = 'indicf5';
+  ttsVoiceMode: 'default' | 'clone' = 'default';
+  refAudioFile: File | null = null;
+  refTranscript: string = '';
+  isSynthesizing = false;
+  activeTtsSide: 'source' | 'target' | null = null;
+  synthesisLatency = 0;
+  private currentAudio: HTMLAudioElement | null = null;
 
   // Credentials for Bhashini Cloud API
   bhashiniConfig = {
@@ -182,6 +193,7 @@ export class AppComponent implements OnInit, OnDestroy {
           this.modelStates.asr = 'not_loaded';
           this.modelStates.en_indic = 'not_loaded';
           this.modelStates.indic_en = 'not_loaded';
+          this.modelStates.tts = 'not_loaded';
           this.areLocalModelsLoaded = false;
           throw err;
         })
@@ -200,11 +212,13 @@ export class AppComponent implements OnInit, OnDestroy {
         this.modelStates.asr = res.models.indic_conformer_asr;
         this.modelStates.en_indic = res.models.indictrans2_en_indic;
         this.modelStates.indic_en = res.models.indictrans2_indic_en;
+        this.modelStates.tts = res.models.indicf5_tts || 'not_loaded';
         
         this.areLocalModelsLoaded = 
           this.modelStates.asr === 'ready' &&
           this.modelStates.en_indic === 'ready' &&
-          this.modelStates.indic_en === 'ready';
+          this.modelStates.indic_en === 'ready' &&
+          (this.modelStates.tts === 'ready' || this.modelStates.tts === 'ready_mock');
         
         // System metrics
         this.sysMetrics.cpuUsage = `${res.system.cpu_usage_percent}%`;
@@ -515,30 +529,86 @@ export class AppComponent implements OnInit, OnDestroy {
     });
   }
 
+  onRefAudioChange(event: any) {
+    const file = event.target.files[0];
+    if (file) {
+      if (file.type !== 'audio/wav' && !file.name.endsWith('.wav')) {
+        alert("Please upload a .wav audio file.");
+        event.target.value = '';
+        return;
+      }
+      this.refAudioFile = file;
+    }
+  }
+
   // Text to Speech Translation Playback
+  listenSourceText() {
+    this.activeTtsSide = 'source';
+    this.listenText(this.sourceText, this.sourceLang);
+  }
+
   listenTargetText() {
-    if (!this.targetText.trim()) return;
+    this.activeTtsSide = 'target';
+    this.listenText(this.targetText, this.targetLang);
+  }
+
+  listenText(text: string, langCode: string) {
+    if (!text.trim()) return;
     
-    const synth = window.speechSynthesis;
-    const utterance = new SpeechSynthesisUtterance(this.targetText);
+    // Fall back to native browser speech synthesis for English, as IndicF5 only supports Indian languages
+    if (langCode === 'en') {
+      if ('speechSynthesis' in window) {
+        if (this.currentAudio) {
+          this.currentAudio.pause();
+          this.currentAudio = null;
+        }
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'en-US';
+        window.speechSynthesis.speak(utterance);
+      } else {
+        alert("Web Speech Synthesis is not supported in this browser.");
+      }
+      return;
+    }
     
-    // Find correct language code mapping
-    const langObj = this.languages.find(l => l.code === this.targetLang);
-    if (langObj && langObj.ttsLangCode) {
-      utterance.lang = langObj.ttsLangCode;
-    } else {
-      utterance.lang = this.targetLang;
+    // Local IndicF5 TTS model (via backend /synthesize)
+    this.isSynthesizing = true;
+    const startTime = Date.now();
+
+    const formData = new FormData();
+    formData.append('text', text);
+    
+    if (this.ttsVoiceMode === 'clone' && this.refAudioFile && this.refTranscript) {
+      formData.append('ref_audio', this.refAudioFile, this.refAudioFile.name);
+      formData.append('ref_text', this.refTranscript);
     }
 
-    // Fallback search for a suitable voice matching the language
-    const voices = synth.getVoices();
-    const matchingVoice = voices.find(v => v.lang.startsWith(this.targetLang));
-    if (matchingVoice) {
-      utterance.voice = matchingVoice;
-    }
-    
-    synth.cancel(); // Cancel any speech currently playing
-    synth.speak(utterance);
+    this.http.post(`${this.backendBaseUrl}/synthesize`, formData, { responseType: 'blob' }).subscribe({
+      next: (blob: Blob) => {
+        this.synthesisLatency = Date.now() - startTime;
+        this.isSynthesizing = false;
+        this.activeTtsSide = null;
+        
+        if (this.currentAudio) {
+          this.currentAudio.pause();
+          this.currentAudio = null;
+        }
+
+        const audioUrl = URL.createObjectURL(blob);
+        this.currentAudio = new Audio(audioUrl);
+        this.currentAudio.play().catch(e => {
+          console.error("Audio playback failed:", e);
+          alert("Audio playback failed. Please check your browser audio configurations.");
+        });
+      },
+      error: (err) => {
+        console.error("TTS synthesis failed:", err);
+        alert("TTS synthesis failed. Make sure the local models are loaded and backend is running.");
+        this.isSynthesizing = false;
+        this.activeTtsSide = null;
+      }
+    });
   }
 
   copyTargetToClipboard() {

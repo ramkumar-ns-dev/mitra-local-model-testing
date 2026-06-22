@@ -18,12 +18,17 @@ class Settings:
     MOCK_MODELS: bool = os.getenv("MOCK_MODELS", "False").lower() in ("true", "1", "yes")
 
     # ASR Model Settings
-    ASR_MODEL_ID: str = os.getenv("ASR_MODEL_ID", "ai4bharat/conformer-hi-gpu--t4")
+    ASR_MODEL_ID: str = os.getenv("ASR_MODEL_ID", "ai4bharat/indic-conformer-600m-multilingual")
     FALLBACK_ASR_MODEL_ID: str = os.getenv("FALLBACK_ASR_MODEL_ID", "openai/whisper-tiny")
     
     # Translation Model Settings
     TRANSLATION_MODEL_ID: str = os.getenv("TRANSLATION_MODEL_ID", "ai4bharat/indictrans2-en-indic-dist-200M")
     HF_TOKEN: str = os.getenv("HF_TOKEN", "")
+
+    # TTS Model Settings (IndicF5)
+    TTS_MODEL_ID: str = os.getenv("TTS_MODEL_ID", "ai4bharat/IndicF5")
+    DEFAULT_REF_AUDIO_PATH: str = os.getenv("DEFAULT_REF_AUDIO_PATH", str(Path(__file__).parent / "resources" / "default_voice.wav"))
+    DEFAULT_REF_TEXT: str = os.getenv("DEFAULT_REF_TEXT", "शिक्षा हमारे जीवन का एक महत्वपूर्ण आधार है यहां न केवल हमें ज्ञान प्रद")
 
     # Security & Limits
     # 50 MB maximum audio file size limit

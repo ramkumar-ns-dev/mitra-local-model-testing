@@ -3,7 +3,8 @@ import requests
 import time
 import psutil
 from typing import Optional
-from fastapi import APIRouter, Request, HTTPException, status
+from fastapi import APIRouter, Request, HTTPException, status, UploadFile, File, Form, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from backend.services.audio_processor import AudioProcessor
 from backend.services.model_loader import model_loader
@@ -238,9 +239,10 @@ def get_legacy_status():
         "models": {
             "indic_conformer_asr": status_info["asr_status"],
             "indictrans2_en_indic": status_info["translation_status"],
-            "indictrans2_indic_en": status_info["translation_status"]
+            "indictrans2_indic_en": status_info["translation_status"],
+            "indicf5_tts": status_info["tts_status"]
         },
-        "loading": (status_info["asr_status"] == "loading") or (status_info["translation_status"] == "loading"),
+        "loading": (status_info["asr_status"] == "loading") or (status_info["translation_status"] == "loading") or (status_info["tts_status"] == "loading"),
         "error": "",
         "system": {
             "cpu_usage_percent": cpu_percent,
@@ -259,3 +261,152 @@ def trigger_legacy_load(request: LoadRequest):
     Legacy POST /load endpoint called by the Angular frontend.
     """
     return {"status": "already_loading" if model_loader.asr_status == "loading" else "ready"}
+
+@router.post("/synthesize")
+def synthesize(
+    text: str = Form(..., description="The target text to synthesize into speech"),
+    ref_audio: Optional[UploadFile] = File(None, description="Optional WAV reference audio file for voice cloning"),
+    ref_text: Optional[str] = Form(None, description="Optional transcript script of the reference audio")
+):
+    """
+    Text-to-Speech Endpoint.
+    Uses IndicF5 to synthesize target text using either a default speaker voice
+    or a custom uploaded speaker reference WAV file.
+    """
+    if not text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Synthesis text cannot be empty."
+        )
+
+    try:
+        ref_audio_bytes = None
+        if ref_audio:
+            ref_audio_bytes = ref_audio.file.read()
+            logger.info(f"Received custom reference voice upload for synthesis: {ref_audio.filename}")
+
+        # Run synthesis
+        wav_bytes = model_loader.synthesize(
+            text=text,
+            ref_audio_bytes=ref_audio_bytes,
+            ref_text=ref_text
+        )
+
+        import io
+        return StreamingResponse(
+            io.BytesIO(wav_bytes),
+            media_type="audio/wav",
+            headers={"Content-Disposition": "attachment; filename=synthesis.wav"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error during TTS synthesis: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Text-to-Speech synthesis failed: {str(e)}"
+        )
+
+
+def is_mostly_ascii(text: str) -> bool:
+    """
+    Returns True if the text is mostly ASCII characters (English/Latin),
+    False otherwise (Indic scripts).
+    """
+    if not text:
+        return True
+    ascii_chars = sum(1 for c in text if ord(c) < 128)
+    return (ascii_chars / len(text)) > 0.7
+
+
+@router.post("/text-to-voice")
+async def text_to_voice(request: Request):
+    """
+    Exposes Text-to-Voice as an API.
+    Accepts JSON body or Form-data/URL-encoded parameters.
+    Takes input text and a target language, translates the text (if English)
+    and synthesizes it into speech.
+    """
+    content_type = request.headers.get("content-type", "")
+    text = ""
+    target_lang = ""
+    
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+            text = body.get("text", "")
+            target_lang = body.get("target_lang") or body.get("tgt_lang") or body.get("language", "")
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JSON payload"
+            )
+    elif "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        text = form.get("text", "")
+        target_lang = form.get("target_lang") or form.get("tgt_lang") or form.get("language", "")
+    else:
+        # Default fallback to JSON parsing
+        try:
+            body = await request.json()
+            text = body.get("text", "")
+            target_lang = body.get("target_lang") or body.get("tgt_lang") or body.get("language", "")
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="Unsupported Content-Type. Use application/json or multipart/form-data"
+            )
+
+    if not text or not text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Input text cannot be empty."
+        )
+        
+    if not target_lang:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing 'target_lang' parameter."
+        )
+        
+    tgt_mapped = LANG_MAP.get(target_lang, target_lang)
+    if tgt_mapped == "eng_Latn":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="English text-to-voice synthesis is not supported on the local backend (only Indian languages are supported)."
+        )
+        
+    try:
+        # Determine if we need to translate first
+        synthesize_text = text
+        if is_mostly_ascii(text):
+            logger.info(f"Input text is mostly ASCII. Translating to {tgt_mapped} first.")
+            synthesize_text = model_loader.translate(
+                text=text,
+                source_lang="eng_Latn",
+                target_lang=tgt_mapped
+            )
+            logger.info(f"Translation result: {synthesize_text}")
+        else:
+            logger.info(f"Input text contains non-ASCII characters. Skipping translation.")
+
+        # Synthesize using IndicF5
+        logger.info(f"Synthesizing text: '{synthesize_text}' into speech")
+        wav_bytes = model_loader.synthesize(
+            text=synthesize_text,
+            ref_audio_bytes=None,
+            ref_text=None
+        )
+
+        return Response(content=wav_bytes, media_type="audio/wav")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error during text-to-voice API processing: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Text-to-Voice API failed: {str(e)}"
+        )
+
