@@ -32,28 +32,28 @@ interface HistoryEntry {
 })
 export class AppComponent implements OnInit, OnDestroy {
   // App state - test change
-  engineMode: 'local' | 'bhashini' | 'demo' = 'demo';
+  engineMode: 'local' | 'bhashini' | 'demo' = 'local';
   serverStatus: 'online' | 'offline' | 'loading' = 'offline';
   serverStatusText = 'Disconnected';
   isBackendLoading = false;
   areLocalModelsLoaded = false;
   hfToken = '';
   deviceTarget = 'CPU';
-  
+
   // Translation workspace fields
   sourceText = '';
   targetText = '';
-  sourceLang = 'en';
-  targetLang = 'hi';
+  sourceLang = 'hi';
+  targetLang = 'en';
   isTranslating = false;
   showCopyToast = false;
-  
+
   // Voice Recording state
   isRecording = false;
   mediaRecorder: MediaRecorder | null = null;
   audioChunks: Blob[] = [];
   wavRecorder: WavRecorder | null = null;
-  
+
   // Telemetry metrics
   metrics = {
     latency: 0,
@@ -61,7 +61,7 @@ export class AppComponent implements OnInit, OnDestroy {
     asrLatency: 0,
     engine: 'Simulated Engine'
   };
-  
+
   sysMetrics = {
     cpuUsage: '0%',
     ramUsage: '0 MB / 0 GB'
@@ -123,7 +123,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   // Observables polling backend status
   private statusSubscription: Subscription | null = null;
-  private backendBaseUrl = 'http://127.0.0.1:8000';
+  backendBaseUrl = 'https://chat-dev-temp.elevate-apis.shikshalokam.org';
 
   constructor(private http: HttpClient) {}
 
@@ -146,9 +146,14 @@ export class AppComponent implements OnInit, OnDestroy {
 
     this.hfToken = localStorage.getItem('mitra_hf_token') || '';
 
+    const savedUrl = localStorage.getItem('mitra_backend_url');
+    if (savedUrl) {
+      this.backendBaseUrl = savedUrl;
+    }
+
     // Start polling python backend status
     this.checkBackendStatus();
-    this.statusSubscription = interval(4000).subscribe(() => {
+    this.statusSubscription = interval(60000).subscribe(() => {
       this.checkBackendStatus();
     });
   }
@@ -171,6 +176,11 @@ export class AppComponent implements OnInit, OnDestroy {
 
   saveHfToken() {
     localStorage.setItem('mitra_hf_token', this.hfToken);
+  }
+
+  saveBackendBaseUrl() {
+    localStorage.setItem('mitra_backend_url', this.backendBaseUrl);
+    this.checkBackendStatus();
   }
 
   updateMetricsEngine() {
@@ -213,13 +223,13 @@ export class AppComponent implements OnInit, OnDestroy {
         this.modelStates.en_indic = res.models.indictrans2_en_indic;
         this.modelStates.indic_en = res.models.indictrans2_indic_en;
         this.modelStates.tts = res.models.indicf5_tts || 'not_loaded';
-        
-        this.areLocalModelsLoaded = 
+
+        this.areLocalModelsLoaded =
           this.modelStates.asr === 'ready' &&
           this.modelStates.en_indic === 'ready' &&
           this.modelStates.indic_en === 'ready' &&
           (this.modelStates.tts === 'ready' || this.modelStates.tts === 'ready_mock');
-        
+
         // System metrics
         this.sysMetrics.cpuUsage = `${res.system.cpu_usage_percent}%`;
         const totalRam = res.system.memory_total_gb;
@@ -233,7 +243,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.isBackendLoading = true;
     this.serverStatus = 'loading';
     this.serverStatusText = 'Downloading/Loading...';
-    
+
     this.http.post(`${this.backendBaseUrl}/load`, { hf_token: this.hfToken }).subscribe({
       next: () => {
         this.checkBackendStatus();
@@ -249,7 +259,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const temp = this.sourceLang;
     this.sourceLang = this.targetLang;
     this.targetLang = temp;
-    
+
     const tempText = this.sourceText;
     this.sourceText = this.targetText;
     this.targetText = tempText;
@@ -275,9 +285,9 @@ export class AppComponent implements OnInit, OnDestroy {
   performTranslation() {
     if (!this.sourceText.trim()) return;
     this.isTranslating = true;
-    
+
     const startTime = Date.now();
-    
+
     if (this.engineMode === 'demo') {
       setTimeout(() => {
         this.targetText = this.getMockTranslationText(this.sourceText, this.sourceLang, this.targetLang);
@@ -286,17 +296,17 @@ export class AppComponent implements OnInit, OnDestroy {
         this.logHistory(this.sourceText, this.targetText, latency, 'Simulated Engine');
         this.isTranslating = false;
       }, 300);
-      
+
     } else if (this.engineMode === 'local') {
       const payload = {
         text: this.sourceText,
         src_lang: this.sourceLang,
         tgt_lang: this.targetLang
       };
-      
+
       this.http.post<any>(`${this.backendBaseUrl}/translate`, payload).subscribe({
         next: (res) => {
-          this.targetText = res.translated_text;
+          this.targetText = res.translation || res.translated_text;
           const latency = Date.now() - startTime;
           this.updateTelemetryMetrics(
             res.metrics.latency_ms || latency,
@@ -312,7 +322,7 @@ export class AppComponent implements OnInit, OnDestroy {
           this.isTranslating = false;
         }
       });
-      
+
     } else if (this.engineMode === 'bhashini') {
       if (!this.bhashiniConfig.userId || !this.bhashiniConfig.apiKey || !this.bhashiniConfig.authToken) {
         alert("Please provide User ID, API Key, and Auth Token in the Setup panel.");
@@ -395,15 +405,15 @@ export class AppComponent implements OnInit, OnDestroy {
       cps: latency > 0 ? Math.round((srcText.length / (latency / 1000.0)) * 100) / 100 : srcText.length,
       engine
     };
-    
+
     // Add to top of list
     this.history.unshift(entry);
-    
+
     // Cap history length at 50
     if (this.history.length > 50) {
       this.history.pop();
     }
-    
+
     localStorage.setItem('mitra_translation_history', JSON.stringify(this.history));
   }
 
@@ -461,7 +471,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if (this.engineMode === 'demo') {
       this.isRecording = true;
       this.metrics.asrLatency = 0;
-      
+
       // Simulate Voice recording translation workflow
       setTimeout(() => {
         this.isRecording = false;
@@ -480,7 +490,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.metrics.asrLatency = 450; // Mock decoding speed
         this.performTranslation();
       }, 2000);
-      
+
       return;
     }
 
@@ -507,17 +517,17 @@ export class AppComponent implements OnInit, OnDestroy {
   uploadAndTranscribeAudio(audioBlob: Blob) {
     this.isTranslating = true;
     const startTime = Date.now();
-    
+
     const formData = new FormData();
     // Send as input.wav
     formData.append('file', audioBlob, 'input.wav');
     formData.append('lang', this.sourceLang);
-    
+
     this.http.post<any>(`${this.backendBaseUrl}/transcribe`, formData).subscribe({
       next: (res) => {
         this.sourceText = res.text;
         this.metrics.asrLatency = res.metrics.latency_ms || (Date.now() - startTime);
-        
+
         // Follow up with translation automatically
         this.performTranslation();
       },
@@ -554,7 +564,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   listenText(text: string, langCode: string) {
     if (!text.trim()) return;
-    
+
     // Fall back to native browser speech synthesis for English, as IndicF5 only supports Indian languages
     if (langCode === 'en') {
       if ('speechSynthesis' in window) {
@@ -571,14 +581,14 @@ export class AppComponent implements OnInit, OnDestroy {
       }
       return;
     }
-    
+
     // Local IndicF5 TTS model (via backend /synthesize)
     this.isSynthesizing = true;
     const startTime = Date.now();
 
     const formData = new FormData();
     formData.append('text', text);
-    
+
     if (this.ttsVoiceMode === 'clone' && this.refAudioFile && this.refTranscript) {
       formData.append('ref_audio', this.refAudioFile, this.refAudioFile.name);
       formData.append('ref_text', this.refTranscript);
@@ -589,7 +599,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.synthesisLatency = Date.now() - startTime;
         this.isSynthesizing = false;
         this.activeTtsSide = null;
-        
+
         if (this.currentAudio) {
           this.currentAudio.pause();
           this.currentAudio = null;
@@ -613,7 +623,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   copyTargetToClipboard() {
     if (!this.targetText.trim()) return;
-    
+
     navigator.clipboard.writeText(this.targetText).then(() => {
       this.showCopyToast = true;
       setTimeout(() => {
@@ -625,7 +635,7 @@ export class AppComponent implements OnInit, OnDestroy {
   // Pre-packaged translation samples for Demo/Mock Mode to show visual feedback instantly
   private getMockTranslationText(text: string, src: string, tgt: string): string {
     const cleaned = text.trim().toLowerCase().replace(/[?.,!]/g, '');
-    
+
     const mockDb: Record<string, Record<string, string>> = {
       'hello': { 'hi': 'नमस्ते', 'ta': 'வணக்கம்', 'te': 'నమస్కారం', 'kn': 'ನಮಸ್ಕಾರ', 'ml': 'നമസ്കാരം', 'bn': 'হ্যালো', 'mr': 'नमस्कार', 'gu': 'નમસ્તે', 'pa': 'ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ' },
       'how are you': { 'hi': 'आप कैसे हैं?', 'ta': 'நீங்கள் எப்படி இருக்கிறீர்கள்?', 'te': 'మీరు ఎలా ఉన్నారు?', 'kn': 'ನೀವು ಹೇಗಿದ್ದೀರಾ?', 'ml': 'സുഖമാണോ?', 'bn': 'আপনি কেমন আছেন?', 'mr': 'तुम्ही कसे आहात?', 'gu': 'તમે કેમ છો?', 'pa': 'ਤੁਸੀਂ ਕਿਵੇਂ ਹੋ?' },
@@ -638,12 +648,12 @@ export class AppComponent implements OnInit, OnDestroy {
       'வணக்கம்': { 'en': 'Hello / Greetings' },
       'நன்றி': { 'en': 'Thank you' }
     };
-    
+
     // Look up in database
     if (mockDb[cleaned] && mockDb[cleaned][tgt]) {
       return mockDb[cleaned][tgt];
     }
-    
+
     // Look up reversed
     if (src === 'en') {
       const langName = this.languages.find(l => l.code === tgt)?.name || tgt;
@@ -668,17 +678,17 @@ class WavRecorder {
     this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
     this.sampleRate = this.audioContext.sampleRate;
-    
+
     const source = this.audioContext.createMediaStreamSource(this.mediaStream);
     this.scriptProcessor = this.audioContext.createScriptProcessor(4096, 1, 1);
-    
+
     this.recordingBuffer = [];
-    
+
     this.scriptProcessor.onaudioprocess = (event) => {
       const input = event.inputBuffer.getChannelData(0);
       this.recordingBuffer.push(new Float32Array(input));
     };
-    
+
     source.connect(this.scriptProcessor);
     this.scriptProcessor.connect(this.audioContext.destination);
   }

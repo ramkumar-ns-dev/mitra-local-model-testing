@@ -55,6 +55,15 @@
         },
         "serve": {
           "builder": "@angular-devkit/build-angular:dev-server",
+          "options": {
+            "allowedHosts": [
+              ".lhr.life",
+              ".serveousercontent.com",
+              ".serveo.net",
+              ".ngrok-free.app",
+              ".localtunnel.me"
+            ]
+          },
           "configurations": {
             "production": {
               "buildTarget": "frontend:build:production"

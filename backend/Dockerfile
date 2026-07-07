@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir torch==2.2.1 torchaudio==2.2.1 --index-url https:
 COPY requirements.txt /app/
 
 # Install the rest of the python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --default-timeout=300 -r requirements.txt
 
 # ==========================================
 # Stage 2: Clean Runtime Image

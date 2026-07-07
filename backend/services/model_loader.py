@@ -119,7 +119,7 @@ class ModelLoader:
             self.translation_status = "loading"
             logger.info(f"Loading translation model: {self.translation_model_name}")
             
-            if "indictrans2-en-indic" in self.translation_model_name.lower():
+            if "indictrans2" in self.translation_model_name.lower():
                 from IndicTransToolkit.processor import IndicProcessor
                 self.indic_processor = IndicProcessor(inference=True)
                 
@@ -131,13 +131,13 @@ class ModelLoader:
                 self.translation_model = AutoModelForSeq2SeqLM.from_pretrained(
                     self.translation_model_name,
                     trust_remote_code=True,
-                    torch_dtype=torch.float32,
+                    torch_dtype=torch.float16 if self.device.type != "cpu" else torch.float32,
                     token=settings.HF_TOKEN
                 ).to(self.device)
                 
                 self.translation_model.eval()
                 self.translation_status = "ready"
-                logger.info("IndicTrans2 translation model loaded successfully.")
+                logger.info(f"IndicTrans2 translation model '{self.translation_model_name}' loaded successfully.")
             else:
                 tokenizer = AutoTokenizer.from_pretrained(self.translation_model_name, token=settings.HF_TOKEN)
                 model = AutoModelForSeq2SeqLM.from_pretrained(
@@ -338,7 +338,7 @@ class ModelLoader:
             return self._get_mock_translation(text, source_lang, target_lang)
 
         # 1. Handle IndicTrans2 Translation Sequence
-        if "indictrans2-en-indic" in self.translation_model_name.lower():
+        if "indictrans2" in self.translation_model_name.lower():
             if not self.translation_model or not self.translation_tokenizer or not self.indic_processor:
                 raise RuntimeError("IndicTrans2 translation model is not fully initialized.")
             
@@ -347,11 +347,15 @@ class ModelLoader:
                 batch = self.indic_processor.preprocess_batch([text], src_lang=source_lang, tgt_lang=target_lang)
                 # Tokenize
                 inputs = self.translation_tokenizer(batch, truncation=True, padding="longest", return_tensors="pt").to(self.device)
+                
+                # Reduce num_beams from 5 to 2 to prevent 504 timeouts
+                num_beams = 2
+                
                 # Generate
                 with torch.no_grad():
                     generated_tokens = self.translation_model.generate(
                         **inputs,
-                        num_beams=5,
+                        num_beams=num_beams,
                         num_return_sequences=1,
                         max_length=256
                     )

@@ -12,7 +12,6 @@ from backend.utils.logging_config import get_logger
 
 logger = get_logger()
 router = APIRouter()
-
 # Language Mapping (ISO 639-1 / Bhashini code -> NLLB-200 code)
 LANG_MAP = {
     "as": "asm_Beng", "bn": "ben_Beng", "brx": "bod_Tibt", "doi": "doi_Deva",
@@ -131,7 +130,6 @@ async def transcribe(request: Request):
             f"Transcription completed: duration={duration:.2f}s, size={file_size} bytes, "
             f"inference_time={inference_time_ms}ms, total_time={total_time_ms}ms, engine={inference_result['engine']}"
         )
-        
         response_payload = {
             "success": True,
             "text": inference_result["text"],
@@ -178,7 +176,6 @@ async def translate(body: TranslateRequest):
     tgt_mapped = LANG_MAP.get(tgt, tgt)
     
     logger.info(f"Translation request: src={src} ({src_mapped}), tgt={tgt} ({tgt_mapped}), text_len={len(body.text)}")
-    
     try:
         translated_text = model_loader.translate(
             text=body.text,
@@ -202,7 +199,6 @@ async def translate(body: TranslateRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Translation failure: {str(e)}"
         )
-
 @router.get("/health")
 async def health():
     """
