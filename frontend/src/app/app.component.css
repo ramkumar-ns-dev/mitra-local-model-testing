@@ -594,3 +594,38 @@ tr:hover td {
   height: 48px;
   opacity: 0.3;
 }
+
+/* Tokens and Cost metrics styling in history */
+.tokens-badge {
+  display: inline-block;
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: monospace;
+}
+
+.cost-badge {
+  display: inline-block;
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: monospace;
+}
+
+.truncate-text {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tokens-badge.bhashini-chars {
+  background: rgba(14, 165, 233, 0.15) !important;
+  color: #38bdf8 !important;
+}

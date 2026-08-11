@@ -2,16 +2,26 @@ import base64
 import requests
 import time
 import psutil
-from typing import Optional
+from typing import Optional, Dict
 from fastapi import APIRouter, Request, HTTPException, status, UploadFile, File, Form, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from backend.services.audio_processor import AudioProcessor
 from backend.services.model_loader import model_loader
+from backend.services.llm_translator import translate_via_llm
 from backend.utils.logging_config import get_logger
 
 logger = get_logger()
 router = APIRouter()
+
+# Try to import and initialize Indic ITN for Hindi text normalization
+try:
+    from indic_itn import HindiITN
+    itn_normalizer = HindiITN()
+    logger.info("Hindi ITN (Inverse Text Normalization) initialized successfully.")
+except ImportError:
+    itn_normalizer = None
+    logger.warning("indic-itn package is not installed. Hindi ITN will be disabled.")
 # Language Mapping (ISO 639-1 / Bhashini code -> NLLB-200 code)
 LANG_MAP = {
     "as": "asm_Beng", "bn": "ben_Beng", "brx": "bod_Tibt", "doi": "doi_Deva",
@@ -29,6 +39,10 @@ class TranslateRequest(BaseModel):
     target_lang: Optional[str] = Field(None, description="Target language tag, e.g., hin_Deva")
     src_lang: Optional[str] = Field(None, description="Legacy source language tag, e.g., en")
     tgt_lang: Optional[str] = Field(None, description="Legacy target language tag, e.g., hi")
+    engine_mode: Optional[str] = Field(None, description="The translation engine mode, e.g., local, bhashini, cloud_llm")
+    model: Optional[str] = Field(None, description="LLM model identifier, e.g., gpt-4o-mini")
+    api_keys: Optional[Dict[str, str]] = Field(None, description="API keys dictionary for LLMs")
+    usd_to_inr_rate: Optional[float] = Field(None, description="Custom conversion rate USD to INR")
 
 @router.post("/transcribe")
 async def transcribe(request: Request):
@@ -125,6 +139,17 @@ async def transcribe(request: Request):
         inference_result = model_loader.transcribe(waveform)
         inference_time_ms = int((time.time() - inference_start) * 1000)
         
+        # Apply Inverse Text Normalization (ITN) for Hindi if normalizer is available
+        transcribed_text = inference_result["text"]
+        print(transcribed_text)
+        if itn_normalizer is not None and transcribed_text:
+            try:
+                normalized_text = itn_normalizer.normalize(transcribed_text)
+                logger.info(f"Applying Hindi ITN to transcription: '{transcribed_text}' -> '{normalized_text}'")
+                transcribed_text = normalized_text
+            except Exception as itn_err:
+                logger.error(f"Failed to apply Hindi ITN normalization: {itn_err}")
+        
         total_time_ms = int((time.time() - start_time) * 1000)
         logger.info(
             f"Transcription completed: duration={duration:.2f}s, size={file_size} bytes, "
@@ -132,7 +157,7 @@ async def transcribe(request: Request):
         )
         response_payload = {
             "success": True,
-            "text": inference_result["text"],
+            "text": transcribed_text,
             "metrics": {
                 "latency_ms": total_time_ms,
                 "engine": inference_result["engine"]
@@ -175,10 +200,74 @@ async def translate(body: TranslateRequest):
     src_mapped = LANG_MAP.get(src, src)
     tgt_mapped = LANG_MAP.get(tgt, tgt)
     
-    logger.info(f"Translation request: src={src} ({src_mapped}), tgt={tgt} ({tgt_mapped}), text_len={len(body.text)}")
+    # Apply Hindi ITN to translation input if the source language is Hindi
+    input_text = body.text
+    if (src_mapped == "hin_Deva" or src == "hi") and itn_normalizer is not None and input_text:
+        try:
+            normalized_text = itn_normalizer.normalize(input_text)
+            logger.info(f"Applying Hindi ITN to translation input: '{input_text}' -> '{normalized_text}'")
+            input_text = normalized_text
+        except Exception as itn_err:
+            logger.error(f"Failed to apply Hindi ITN normalization: {itn_err}")
+            
+    # Helper to resolve 2-letter language codes for Cloud LLM
+    def get_two_letter_code(lang_tag: str) -> str:
+        if not lang_tag:
+            return ""
+        if "_" in lang_tag:
+            part = lang_tag.split("_")[0].lower()
+            code_map = {
+                "hin": "hi", "eng": "en", "tam": "ta", "tel": "te",
+                "kan": "kn", "mal": "ml", "mar": "mr", "guj": "gu",
+                "ben": "bn", "pan": "pa", "ory": "or", "asm": "as",
+                "san": "sa", "urd": "ur", "nep": "ne", "kas": "ks",
+                "kok": "kok", "snd": "sd", "bod": "brx", "doi": "doi",
+                "mai": "mai", "mni": "mni", "sat": "sat"
+            }
+            return code_map.get(part, part)
+        return lang_tag.lower()
+
+    # If Cloud LLM mode is selected, route here
+    if body.engine_mode == "cloud_llm":
+        if not body.model:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Model parameter is required for Cloud LLM translation."
+            )
+        
+        src_code = get_two_letter_code(src)
+        tgt_code = get_two_letter_code(tgt)
+        
+        logger.info(f"Cloud LLM translation: src={src_code}, tgt={tgt_code}, model={body.model}, text_len={len(input_text)}")
+        try:
+            res = translate_via_llm(
+                text=input_text,
+                source_lang=src_code,
+                target_lang=tgt_code,
+                model=body.model,
+                api_keys=body.api_keys,
+                usd_to_inr_rate=body.usd_to_inr_rate or 84.00
+            )
+            return {
+                "translation": res["translation"],
+                "metrics": {
+                    "latency_ms": res["latency_ms"],
+                    "engine": f"Cloud LLM ({body.model})"
+                },
+                "token_metrics": res["token_metrics"]
+            }
+        except Exception as llm_err:
+            logger.exception(f"Cloud LLM translation failure: {llm_err}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Cloud LLM Translation failed: {str(llm_err)}"
+            )
+
+    # Otherwise fallback to local translation engines
+    logger.info(f"Translation request: src={src} ({src_mapped}), tgt={tgt} ({tgt_mapped}), text_len={len(input_text)}")
     try:
         translated_text = model_loader.translate(
-            text=body.text,
+            text=input_text,
             source_lang=src_mapped,
             target_lang=tgt_mapped
         )
@@ -186,11 +275,23 @@ async def translate(body: TranslateRequest):
         processing_time_ms = int((time.time() - start_time) * 1000)
         logger.info(f"Translation completed in {processing_time_ms}ms")
         
+        engine_str = f"Local IndicTrans2 ({model_loader.translation_model_name})" if model_loader.translation_status == "ready" else "Simulated Engine"
+        if body.engine_mode == "bhashini":
+            engine_str = "Bhashini Cloud API"
+            
         return {
             "translation": translated_text,
             "metrics": {
                 "latency_ms": processing_time_ms,
-                "engine": f"Local IndicTrans2 ({model_loader.translation_model_name})" if model_loader.translation_status == "ready" else "Simulated Engine"
+                "engine": engine_str
+            },
+            "token_metrics": {
+                "model": "local" if (body.engine_mode == "local" or not body.engine_mode) else "bhashini",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+                "cost_inr": 0.0
             }
         }
     except Exception as e:

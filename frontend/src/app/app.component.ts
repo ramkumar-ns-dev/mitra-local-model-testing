@@ -21,6 +21,9 @@ interface HistoryEntry {
   latency: number;
   cps: number;
   engine: string;
+  costInr?: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 @Component({
@@ -32,7 +35,7 @@ interface HistoryEntry {
 })
 export class AppComponent implements OnInit, OnDestroy {
   // App state - test change
-  engineMode: 'local' | 'bhashini' | 'demo' = 'local';
+  engineMode: 'local' | 'bhashini' | 'demo' | 'cloud_llm' = 'local';
   serverStatus: 'online' | 'offline' | 'loading' = 'offline';
   serverStatusText = 'Disconnected';
   isBackendLoading = false;
@@ -59,7 +62,10 @@ export class AppComponent implements OnInit, OnDestroy {
     latency: 0,
     cps: 0,
     asrLatency: 0,
-    engine: 'Simulated Engine'
+    engine: 'Simulated Engine',
+    costInr: 0,
+    inputTokens: 0,
+    outputTokens: 0
   };
 
   sysMetrics = {
@@ -91,6 +97,21 @@ export class AppComponent implements OnInit, OnDestroy {
     authToken: ''
   };
 
+  // Bhashini Rates Configuration (INR per 1,000 characters)
+  bhashiniRates = {
+    translationRatePer1000: 1.0
+  };
+
+  // Cloud LLM Configuration
+  selectedLlmModel = 'gemini-1.5-flash';
+  usdToInrRate = 84.0;
+  llmKeys = {
+    openai: '',
+    gemini: '',
+    anthropic: '',
+    deepseek: ''
+  };
+
   // Translation history
   history: HistoryEntry[] = [];
 
@@ -102,7 +123,7 @@ export class AppComponent implements OnInit, OnDestroy {
     { code: 'te', name: 'Telugu', nativeName: 'తెలుగు', ttsLangCode: 'te-IN' },
     { code: 'kn', name: 'Kannada', nativeName: 'ಕನ್ನಡ', ttsLangCode: 'kn-IN' },
     { code: 'ml', name: 'Malayalam', nativeName: 'മലയാളം', ttsLangCode: 'ml-IN' },
-    { code: 'mr', name: 'Marathi', nativeName: 'मराठी', ttsLangCode: 'mr-IN' },
+    { code: 'mr', name: 'Marathi', nativeName: 'மराठी', ttsLangCode: 'mr-IN' },
     { code: 'gu', name: 'Gujarati', nativeName: 'ગુજરાતી', ttsLangCode: 'gu-IN' },
     { code: 'bn', name: 'Bengali', nativeName: 'বাংলা', ttsLangCode: 'bn-IN' },
     { code: 'pa', name: 'Punjabi', nativeName: 'ਪੰਜਾਬੀ', ttsLangCode: 'pa-IN' },
@@ -134,9 +155,26 @@ export class AppComponent implements OnInit, OnDestroy {
       this.bhashiniConfig = JSON.parse(savedConfig);
     }
 
+    const savedLlmKeys = localStorage.getItem('mitra_llm_keys');
+    if (savedLlmKeys) {
+      this.llmKeys = JSON.parse(savedLlmKeys);
+    }
+
+    this.selectedLlmModel = localStorage.getItem('mitra_llm_model') || 'gemini-1.5-flash';
+
+    const savedRate = localStorage.getItem('mitra_usd_to_inr_rate');
+    if (savedRate) {
+      this.usdToInrRate = parseFloat(savedRate);
+    }
+
     const savedHistory = localStorage.getItem('mitra_translation_history');
     if (savedHistory) {
       this.history = JSON.parse(savedHistory);
+    }
+
+    const savedBhashiniRates = localStorage.getItem('mitra_bhashini_rates');
+    if (savedBhashiniRates) {
+      this.bhashiniRates = JSON.parse(savedBhashiniRates);
     }
 
     const savedMode = localStorage.getItem('mitra_engine_mode');
@@ -158,13 +196,29 @@ export class AppComponent implements OnInit, OnDestroy {
     });
   }
 
+  saveLlmKeys() {
+    localStorage.setItem('mitra_llm_keys', JSON.stringify(this.llmKeys));
+  }
+
+  saveLlmModel() {
+    localStorage.setItem('mitra_llm_model', this.selectedLlmModel);
+  }
+
+  saveUsdToInrRate() {
+    localStorage.setItem('mitra_usd_to_inr_rate', this.usdToInrRate.toString());
+  }
+
+  saveBhashiniRates() {
+    localStorage.setItem('mitra_bhashini_rates', JSON.stringify(this.bhashiniRates));
+  }
+
   ngOnDestroy() {
     if (this.statusSubscription) {
       this.statusSubscription.unsubscribe();
     }
   }
 
-  setEngineMode(mode: 'local' | 'bhashini' | 'demo') {
+  setEngineMode(mode: 'local' | 'bhashini' | 'demo' | 'cloud_llm') {
     this.engineMode = mode;
     localStorage.setItem('mitra_engine_mode', mode);
     this.updateMetricsEngine();
@@ -188,6 +242,8 @@ export class AppComponent implements OnInit, OnDestroy {
       this.metrics.engine = 'Simulated Engine';
     } else if (this.engineMode === 'bhashini') {
       this.metrics.engine = 'Bhashini Cloud API';
+    } else if (this.engineMode === 'cloud_llm') {
+      this.metrics.engine = `Cloud LLM (${this.selectedLlmModel})`;
     } else {
       this.metrics.engine = 'AI4Bharat Local API';
     }
@@ -292,33 +348,59 @@ export class AppComponent implements OnInit, OnDestroy {
       setTimeout(() => {
         this.targetText = this.getMockTranslationText(this.sourceText, this.sourceLang, this.targetLang);
         const latency = Date.now() - startTime;
-        this.updateTelemetryMetrics(latency, this.sourceText.length, 'Simulated Engine');
-        this.logHistory(this.sourceText, this.targetText, latency, 'Simulated Engine');
+        
+        // Mock token metrics for demo mode
+        const mockInputTokens = Math.ceil(this.sourceText.length / 4);
+        const mockOutputTokens = Math.ceil(this.targetText.length / 4);
+        const mockCost = Math.round((mockInputTokens * 0.15 + mockOutputTokens * 0.60) / 10000 * this.usdToInrRate * 10000) / 10000;
+        
+        this.updateTelemetryMetrics(latency, this.sourceText.length, 'Simulated Engine', mockCost, mockInputTokens, mockOutputTokens);
+        this.logHistory(this.sourceText, this.targetText, latency, 'Simulated Engine', mockCost, mockInputTokens, mockOutputTokens);
         this.isTranslating = false;
       }, 300);
 
-    } else if (this.engineMode === 'local') {
-      const payload = {
+    } else if (this.engineMode === 'local' || this.engineMode === 'cloud_llm') {
+      const payload: any = {
         text: this.sourceText,
         src_lang: this.sourceLang,
-        tgt_lang: this.targetLang
+        tgt_lang: this.targetLang,
+        engine_mode: this.engineMode
       };
+
+      if (this.engineMode === 'cloud_llm') {
+        payload.model = this.selectedLlmModel;
+        payload.api_keys = this.llmKeys;
+        payload.usd_to_inr_rate = this.usdToInrRate;
+      }
 
       this.http.post<any>(`${this.backendBaseUrl}/translate`, payload).subscribe({
         next: (res) => {
           this.targetText = res.translation || res.translated_text;
           const latency = Date.now() - startTime;
+          const tokenMetrics = res.token_metrics || { cost_inr: 0, input_tokens: 0, output_tokens: 0 };
           this.updateTelemetryMetrics(
             res.metrics.latency_ms || latency,
             this.sourceText.length,
-            res.metrics.engine
+            res.metrics.engine,
+            tokenMetrics.cost_inr,
+            tokenMetrics.input_tokens,
+            tokenMetrics.output_tokens
           );
-          this.logHistory(this.sourceText, this.targetText, res.metrics.latency_ms || latency, res.metrics.engine);
+          this.logHistory(
+            this.sourceText,
+            this.targetText,
+            res.metrics.latency_ms || latency,
+            res.metrics.engine,
+            tokenMetrics.cost_inr,
+            tokenMetrics.input_tokens,
+            tokenMetrics.output_tokens
+          );
           this.isTranslating = false;
         },
         error: (err) => {
-          console.error("Local translation failed:", err);
-          alert("Translation failed. Ensure the python backend server is running and models are loaded.");
+          console.error("Translation failed:", err);
+          const errorMsg = err.error?.detail || err.message || "Ensure the python backend server is running.";
+          alert("Translation failed: " + errorMsg);
           this.isTranslating = false;
         }
       });
@@ -343,10 +425,6 @@ export class AppComponent implements OnInit, OnDestroy {
       'Content-Type': 'application/json'
     };
 
-    // Service ID determination
-    // IndicTrans2 translates all pairs. For Bhashini, a general model service ID can be supplied
-    // mapping each language pair, or we can use the default pipeline configurator.
-    // For simplicity, we search the config on demand, or fallback to standard ai4bharat service IDs.
     const payload = {
       pipelineTasks: [
         {
@@ -356,7 +434,6 @@ export class AppComponent implements OnInit, OnDestroy {
               sourceLanguage: this.sourceLang,
               targetLanguage: this.targetLang
             },
-            // general default bhashini model service ID
             serviceId: 'ai4bharat/indictrans-v2-all-gpu--t4'
           }
         }
@@ -372,8 +449,14 @@ export class AppComponent implements OnInit, OnDestroy {
           const translated = res.pipelineResponse[0].output[0].target;
           this.targetText = translated;
           const latency = Date.now() - startTime;
-          this.updateTelemetryMetrics(latency, this.sourceText.length, 'Bhashini Cloud API');
-          this.logHistory(this.sourceText, this.targetText, latency, 'Bhashini Cloud API');
+          
+          // Calculate character count and Bhashini costing
+          const inputChars = this.sourceText.length;
+          const outputChars = translated.length;
+          const bhashiniCost = (inputChars * this.bhashiniRates.translationRatePer1000) / 1000;
+          
+          this.updateTelemetryMetrics(latency, this.sourceText.length, 'Bhashini Cloud API', bhashiniCost, inputChars, outputChars);
+          this.logHistory(this.sourceText, this.targetText, latency, 'Bhashini Cloud API', bhashiniCost, inputChars, outputChars);
         } catch (e) {
           console.error("Failed to parse Bhashini response", e);
           alert("Bhashini API key rejected or serviceId configuration error.");
@@ -388,13 +471,31 @@ export class AppComponent implements OnInit, OnDestroy {
     });
   }
 
-  updateTelemetryMetrics(latencyMs: number, charsCount: number, engine: string) {
+  updateTelemetryMetrics(
+    latencyMs: number,
+    charsCount: number,
+    engine: string,
+    costInr: number = 0,
+    inputTokens: number = 0,
+    outputTokens: number = 0
+  ) {
     this.metrics.latency = latencyMs;
     this.metrics.cps = latencyMs > 0 ? Math.round((charsCount / (latencyMs / 1000.0)) * 100) / 100 : charsCount;
     this.metrics.engine = engine;
+    this.metrics.costInr = costInr;
+    this.metrics.inputTokens = inputTokens;
+    this.metrics.outputTokens = outputTokens;
   }
 
-  logHistory(srcText: string, tgtText: string, latency: number, engine: string) {
+  logHistory(
+    srcText: string,
+    tgtText: string,
+    latency: number,
+    engine: string,
+    costInr: number = 0,
+    inputTokens: number = 0,
+    outputTokens: number = 0
+  ) {
     const entry: HistoryEntry = {
       timestamp: new Date(),
       srcLang: this.sourceLang,
@@ -403,7 +504,10 @@ export class AppComponent implements OnInit, OnDestroy {
       tgtText,
       latency,
       cps: latency > 0 ? Math.round((srcText.length / (latency / 1000.0)) * 100) / 100 : srcText.length,
-      engine
+      engine,
+      costInr,
+      inputTokens,
+      outputTokens
     };
 
     // Add to top of list
@@ -433,7 +537,7 @@ export class AppComponent implements OnInit, OnDestroy {
       filename = 'mitra_efficiency_metrics.json';
     } else {
       // CSV Export
-      const headers = ['Timestamp', 'Source Language', 'Target Language', 'Source Text', 'Translation', 'Latency (ms)', 'Throughput (char/s)', 'Engine'];
+      const headers = ['Timestamp', 'Source Language', 'Target Language', 'Source Text', 'Translation', 'Latency (ms)', 'Throughput (char/s)', 'Engine', 'Input Tokens', 'Output Tokens', 'Total Tokens', 'Cost (INR)'];
       const rows = this.history.map(e => [
         new Date(e.timestamp).toISOString(),
         e.srcLang,
@@ -442,7 +546,11 @@ export class AppComponent implements OnInit, OnDestroy {
         `"${e.tgtText.replace(/"/g, '""')}"`,
         e.latency,
         e.cps,
-        e.engine
+        e.engine,
+        e.inputTokens || 0,
+        e.outputTokens || 0,
+        (e.inputTokens || 0) + (e.outputTokens || 0),
+        e.costInr ? `₹${e.costInr.toFixed(4)}` : '₹0.0000'
       ]);
       dataStr = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
       mimeType = 'text/csv';
