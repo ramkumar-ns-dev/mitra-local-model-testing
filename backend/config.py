@@ -2,8 +2,9 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from local .env file
-load_dotenv()
+# Load environment variables from local .env file in workspace root
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=env_path, override=True)
 
 class Settings:
     # API Settings

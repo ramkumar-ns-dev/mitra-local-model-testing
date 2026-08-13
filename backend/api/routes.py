@@ -14,14 +14,7 @@ from backend.utils.logging_config import get_logger
 logger = get_logger()
 router = APIRouter()
 
-# Try to import and initialize Indic ITN for Hindi text normalization
-try:
-    from indic_itn import HindiITN
-    itn_normalizer = HindiITN()
-    logger.info("Hindi ITN (Inverse Text Normalization) initialized successfully.")
-except ImportError:
-    itn_normalizer = None
-    logger.warning("indic-itn package is not installed. Hindi ITN will be disabled.")
+from backend.services.itn_service import itn_service
 # Language Mapping (ISO 639-1 / Bhashini code -> NLLB-200 code)
 LANG_MAP = {
     "as": "asm_Beng", "bn": "ben_Beng", "brx": "bod_Tibt", "doi": "doi_Deva",
@@ -73,6 +66,7 @@ async def transcribe(request: Request):
             filename = upload_file.filename
             file_bytes = await upload_file.read()
             file_size = len(file_bytes)
+            req_lang = form.get("lang") or form.get("language") or form.get("source_lang") or form.get("src_lang") or "hi"
             
         elif "application/json" in content_type:
             logger.info("Parsing JSON payload for transcription")
@@ -122,6 +116,8 @@ async def transcribe(request: Request):
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Failed to decode base64 audio."
                     )
+            req_lang = body.get("lang") or body.get("language") or body.get("source_lang") or body.get("src_lang") or "hi"
+
         else:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -136,19 +132,14 @@ async def transcribe(request: Request):
         
         # 4. Inference
         inference_start = time.time()
-        inference_result = model_loader.transcribe(waveform)
+        inference_result = model_loader.transcribe(waveform, language=req_lang)
         inference_time_ms = int((time.time() - inference_start) * 1000)
         
-        # Apply Inverse Text Normalization (ITN) for Hindi if normalizer is available
+        # Apply Inverse Text Normalization (ITN) using language-specific normalizer
         transcribed_text = inference_result["text"]
         print(transcribed_text)
-        if itn_normalizer is not None and transcribed_text:
-            try:
-                normalized_text = itn_normalizer.normalize(transcribed_text)
-                logger.info(f"Applying Hindi ITN to transcription: '{transcribed_text}' -> '{normalized_text}'")
-                transcribed_text = normalized_text
-            except Exception as itn_err:
-                logger.error(f"Failed to apply Hindi ITN normalization: {itn_err}")
+        if transcribed_text:
+            transcribed_text = itn_service.normalize(transcribed_text, lang=req_lang)
         
         total_time_ms = int((time.time() - start_time) * 1000)
         logger.info(
@@ -200,15 +191,10 @@ async def translate(body: TranslateRequest):
     src_mapped = LANG_MAP.get(src, src)
     tgt_mapped = LANG_MAP.get(tgt, tgt)
     
-    # Apply Hindi ITN to translation input if the source language is Hindi
+    # Apply Inverse Text Normalization (ITN) to translation input for supported languages
     input_text = body.text
-    if (src_mapped == "hin_Deva" or src == "hi") and itn_normalizer is not None and input_text:
-        try:
-            normalized_text = itn_normalizer.normalize(input_text)
-            logger.info(f"Applying Hindi ITN to translation input: '{input_text}' -> '{normalized_text}'")
-            input_text = normalized_text
-        except Exception as itn_err:
-            logger.error(f"Failed to apply Hindi ITN normalization: {itn_err}")
+    if input_text:
+        input_text = itn_service.normalize(input_text, lang=src)
             
     # Helper to resolve 2-letter language codes for Cloud LLM
     def get_two_letter_code(lang_tag: str) -> str:
@@ -313,12 +299,15 @@ async def health():
     return {
         "status": "healthy" if is_healthy else "unhealthy",
         "model_loaded": is_healthy,
+        "itn": itn_service.get_status(),
         "details": status_info
     }
 
 # Legacy Endpoints for Angular Frontend Compatibility
 
 @router.get("/status")
+@router.get("//status")
+@router.get("/status/")
 def get_legacy_status():
     """
     Legacy GET /status endpoint polled by the Angular frontend.
@@ -339,7 +328,13 @@ def get_legacy_status():
             "indictrans2_indic_en": status_info["translation_status"],
             "indicf5_tts": status_info["tts_status"]
         },
+        "configured_models": {
+            "asr": status_info["asr_model"],
+            "translation": status_info["translation_model"],
+            "tts": status_info["tts_model"]
+        },
         "loading": (status_info["asr_status"] == "loading") or (status_info["translation_status"] == "loading") or (status_info["tts_status"] == "loading"),
+        "itn": itn_service.get_status(),
         "error": "",
         "system": {
             "cpu_usage_percent": cpu_percent,

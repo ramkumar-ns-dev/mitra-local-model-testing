@@ -42,6 +42,11 @@ export class AppComponent implements OnInit, OnDestroy {
   areLocalModelsLoaded = false;
   hfToken = '';
   deviceTarget = 'CPU';
+  configuredModels = {
+    asr: 'vasista22/whisper-tamil-small',
+    translation: 'ai4bharat/indictrans2-indic-en-1B',
+    tts: 'ai4bharat/IndicF5'
+  };
 
   // Translation workspace fields
   sourceText = '';
@@ -144,7 +149,12 @@ export class AppComponent implements OnInit, OnDestroy {
 
   // Observables polling backend status
   private statusSubscription: Subscription | null = null;
-  backendBaseUrl = 'https://chat-dev-temp.elevate-apis.shikshalokam.org';
+  backendBaseUrl = 'http://127.0.0.1:8000';
+
+  get cleanBackendBaseUrl(): string {
+    const raw = (this.backendBaseUrl || 'http://127.0.0.1:8000').trim();
+    return raw.replace(/\/+$/, '');
+  }
 
   constructor(private http: HttpClient) {}
 
@@ -185,8 +195,11 @@ export class AppComponent implements OnInit, OnDestroy {
     this.hfToken = localStorage.getItem('mitra_hf_token') || '';
 
     const savedUrl = localStorage.getItem('mitra_backend_url');
-    if (savedUrl) {
+    if (savedUrl && !savedUrl.includes('elevate-apis.shikshalokam.org')) {
       this.backendBaseUrl = savedUrl;
+    } else {
+      this.backendBaseUrl = 'http://127.0.0.1:8000';
+      localStorage.setItem('mitra_backend_url', 'http://127.0.0.1:8000');
     }
 
     // Start polling python backend status
@@ -250,7 +263,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   checkBackendStatus() {
-    this.http.get<any>(`${this.backendBaseUrl}/status`)
+    this.http.get<any>(`${this.cleanBackendBaseUrl}/status`)
       .pipe(
         catchError((err) => {
           this.serverStatus = 'offline';
@@ -273,6 +286,9 @@ export class AppComponent implements OnInit, OnDestroy {
           this.serverStatus = 'online';
           this.serverStatusText = 'Connected';
           this.isBackendLoading = false;
+        }
+        if (res.configured_models) {
+          this.configuredModels = res.configured_models;
         }
         this.deviceTarget = res.device.toUpperCase();
         this.modelStates.asr = res.models.indic_conformer_asr;
@@ -300,7 +316,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.serverStatus = 'loading';
     this.serverStatusText = 'Downloading/Loading...';
 
-    this.http.post(`${this.backendBaseUrl}/load`, { hf_token: this.hfToken }).subscribe({
+    this.http.post(`${this.cleanBackendBaseUrl}/load`, { hf_token: this.hfToken }).subscribe({
       next: () => {
         this.checkBackendStatus();
       },
@@ -373,7 +389,7 @@ export class AppComponent implements OnInit, OnDestroy {
         payload.usd_to_inr_rate = this.usdToInrRate;
       }
 
-      this.http.post<any>(`${this.backendBaseUrl}/translate`, payload).subscribe({
+      this.http.post<any>(`${this.cleanBackendBaseUrl}/translate`, payload).subscribe({
         next: (res) => {
           this.targetText = res.translation || res.translated_text;
           const latency = Date.now() - startTime;
@@ -631,7 +647,7 @@ export class AppComponent implements OnInit, OnDestroy {
     formData.append('file', audioBlob, 'input.wav');
     formData.append('lang', this.sourceLang);
 
-    this.http.post<any>(`${this.backendBaseUrl}/transcribe`, formData).subscribe({
+    this.http.post<any>(`${this.cleanBackendBaseUrl}/transcribe`, formData).subscribe({
       next: (res) => {
         this.sourceText = res.text;
         this.metrics.asrLatency = res.metrics.latency_ms || (Date.now() - startTime);
@@ -702,7 +718,7 @@ export class AppComponent implements OnInit, OnDestroy {
       formData.append('ref_text', this.refTranscript);
     }
 
-    this.http.post(`${this.backendBaseUrl}/synthesize`, formData, { responseType: 'blob' }).subscribe({
+    this.http.post(`${this.cleanBackendBaseUrl}/synthesize`, formData, { responseType: 'blob' }).subscribe({
       next: (blob: Blob) => {
         this.synthesisLatency = Date.now() - startTime;
         this.isSynthesizing = false;
