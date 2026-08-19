@@ -51,16 +51,24 @@ class WhisperASRProvider(BaseASRProvider):
         lang_normalized = language.strip().lower() if language else "hi"
         lang_full = WHISPER_LANG_MAP.get(lang_normalized, lang_normalized)
 
+        # Generate forced decoder IDs for target language
+        forced_ids = None
         try:
             forced_ids = self.pipeline.tokenizer.get_decoder_prompt_ids(language=lang_full, task="transcribe")
-            gen_kwargs = {"forced_decoder_ids": forced_ids}
         except Exception as e:
-            logger.warning(f"Could not get forced_decoder_ids for language '{lang_full}': {e}")
-            gen_kwargs = {"task": "transcribe"}
+            logger.debug(f"Tokenizer prompt IDs not generated for '{lang_full}': {e}")
 
-        logger.info(f"Running Whisper transcription with generate_kwargs: {gen_kwargs}")
+        # Attempt inference with forced IDs if available, falling back to direct pipeline inference
+        result = None
+        if forced_ids:
+            try:
+                result = self.pipeline(audio_array, generate_kwargs={"forced_decoder_ids": forced_ids})
+            except Exception as e:
+                logger.warning(f"Whisper inference with forced decoder IDs failed ({e}). Falling back to native model generation.")
 
-        result = self.pipeline(audio_array, generate_kwargs=gen_kwargs)
+        if result is None:
+            result = self.pipeline(audio_array)
+
         text = result.get("text", "").strip()
 
         confidence = None
