@@ -1,21 +1,32 @@
 version: '3.8'
 
 services:
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: mitra-backend
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    environment:
-      - MOCK_MODELS=False
-    volumes:
-      # Persist downloaded model weights so they aren't redownloaded on container restart
-      - model_cache:/app/model_cache
+  airepositorymitra-backend:
+    image: ramkumarnallusamy/airepositiorymitra-backend:1.0.4
+    container_name: mitra-backend-ai
     restart: unless-stopped
 
-volumes:
-  model_cache:
+    ports:
+      - "127.0.0.1:3970:8000"
+
+    environment:
+      HF_TOKEN: "..."
+      ASR_MODEL_ID: "ai4bharat/indic-conformer-600m-multilingual"
+      TRANSLATION_MODEL_ID: "ai4bharat/indictrans2-indic-en-1B"
+      TTS_MODEL_ID: "ai4bharat/IndicF5"
+
+      ASR_MODELS_JSON: >-
+        {
+          "ta": "vasista22/whisper-tamil-small",
+          "hi": "vasista22/whisper-hindi-small",
+          "en": "openai/whisper-tiny",
+          "default": "vasista22/whisper-tamil-small"
+        }
+
+    networks:
+      - elevate_net
+
+networks:
+  elevate_net:
+    external: true
+    name: rocket-chat-docker_elevate_net
